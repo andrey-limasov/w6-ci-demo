@@ -1,0 +1,110 @@
+# Демо воркшопа №6: заготовка test, build, publish из материалов, раздел 5.3.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: gitleaks (files)
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo
+          zricethezav/gitleaks:v8.28.0
+          dir . --redact --no-banner --no-color -v
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres   # одноразовая база раннера  # pragma: allowlist secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: dev
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres  # pragma: allowlist secret
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Migrations
+        run: uv run alembic upgrade head
+      - name: pytest
+        run: uv run pytest --cov --cov-report=term-missing
+
+  build:
+    needs: [lint, secrets, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build --label demo.built-by=build -t app:${{ github.sha }} .
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=long
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          provenance: false               # только в демо: один манифест, метки читаются одной командой
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: demo.built-by=publish
+
+      - name: Labels in registry
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: docker buildx imagetools inspect "$(echo "$TAGS" | head -n 1)" --format '{{json .Image.Config.Labels}}'
