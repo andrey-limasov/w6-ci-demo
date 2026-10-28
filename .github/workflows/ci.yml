@@ -53,7 +53,7 @@ jobs:
           --health-retries 10
     env:
       APP_ENV: dev
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres  # pragma: allowlist secret
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres  # pragma: allowlist secret
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
